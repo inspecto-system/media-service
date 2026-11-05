@@ -19,7 +19,7 @@ func (p pinger) Ping(context.Context) error { return p.err }
 func newTestRouter(database Pinger) (http.Handler, *bytes.Buffer) {
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	return NewRouter(logger, database), &logs
+	return NewRouter(Dependencies{Logger: logger, Ready: []Pinger{database}}), &logs
 }
 
 func serve(handler http.Handler, method, path string, header http.Header) *httptest.ResponseRecorder {
