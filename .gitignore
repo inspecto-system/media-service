@@ -1,0 +1,6 @@
+# Build and test output
+/bin/
+coverage.out
+# IDE
+.idea/
+.vscode/
