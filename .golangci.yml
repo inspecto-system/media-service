@@ -1,0 +1,46 @@
+# Canonical golangci-lint configuration for Inspecto Go services.
+# Every Go repository keeps an identical copy at its root; CI fails on drift.
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - unparam
+    - gosec
+    - bodyclose
+    - noctx
+    - errorlint
+    - gocyclo
+    - funlen
+    - revive
+    - misspell
+    - sqlclosecheck
+    - rowserrcheck
+  settings:
+    gocyclo:
+      min-complexity: 10
+    funlen:
+      lines: 60
+      statements: 40
+    revive:
+      rules:
+        - name: exported
+        - name: error-return
+        - name: error-naming
+        - name: var-naming
+        - name: argument-limit
+          arguments: [5]
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [funlen, gosec]
+formatters:
+  enable:
+    - gofmt
+    - goimports
