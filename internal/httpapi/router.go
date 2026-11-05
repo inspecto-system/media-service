@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -18,10 +17,21 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// NewRouter builds the HTTP handler of the service. Endpoints of later tasks are mounted here.
-func NewRouter(logger *slog.Logger, database Pinger) http.Handler {
+// Dependencies are the parts the HTTP layer works with.
+type Dependencies struct {
+	Logger *slog.Logger
+	// Ready lists the dependencies checked by /health/ready.
+	Ready    []Pinger
+	Verifier TokenVerifier
+	Photos   PhotoService
+	Limits   Limits
+}
+
+// NewRouter builds the HTTP handler of the service. External endpoints are served under /api/v1,
+// as routed by nginx (ADR-013).
+func NewRouter(deps Dependencies) http.Handler {
 	r := chi.NewRouter()
-	r.Use(withRequestID, withAccessLog(logger), withRecovery(logger))
+	r.Use(withRequestID, withSecurityHeaders, withAccessLog(deps.Logger), withRecovery(deps.Logger))
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		WriteProblem(w, r, http.StatusNotFound, CodeNotFound, "Resource not found")
 	})
@@ -29,30 +39,34 @@ func NewRouter(logger *slog.Logger, database Pinger) http.Handler {
 		WriteProblem(w, r, http.StatusMethodNotAllowed, CodeValidation, "Method not allowed")
 	})
 	r.Get("/health/live", func(w http.ResponseWriter, _ *http.Request) {
-		writeHealth(w, http.StatusOK, "UP")
+		writeJSON(w, http.StatusOK, map[string]string{"status": "UP"})
 	})
-	r.Get("/health/ready", readiness(logger, database))
+	r.Get("/health/ready", readiness(deps.Logger, deps.Ready))
+
+	photos := photoHandlers{photos: deps.Photos, limits: deps.Limits, logger: deps.Logger}
+	r.Route("/api/v1/photos", func(r chi.Router) {
+		r.Use(authenticated(deps.Verifier))
+		r.Get("/limits", photos.getLimits)
+		r.Post("/", photos.upload)
+		r.Get("/{photoId}/content", photos.content)
+		r.Delete("/{photoId}", photos.delete)
+	})
 	return r
 }
 
-// readiness reports UP when the database answers; otherwise DOWN with 503, so that docker compose
-// and nginx stop routing to the instance. The cause is logged, not returned.
-func readiness(logger *slog.Logger, database Pinger) http.HandlerFunc {
+// readiness reports UP when every dependency answers; otherwise DOWN with 503, so that docker
+// compose and nginx stop routing to the instance. The cause is logged, not returned.
+func readiness(logger *slog.Logger, dependencies []Pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 		defer cancel()
-		if err := database.Ping(ctx); err != nil {
-			logger.WarnContext(r.Context(), "database is not ready", slog.Any("error", err))
-			writeHealth(w, http.StatusServiceUnavailable, "DOWN")
-			return
+		for _, dependency := range dependencies {
+			if err := dependency.Ping(ctx); err != nil {
+				logger.WarnContext(r.Context(), "dependency is not ready", slog.Any("error", err))
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "DOWN"})
+				return
+			}
 		}
-		writeHealth(w, http.StatusOK, "UP")
+		writeJSON(w, http.StatusOK, map[string]string{"status": "UP"})
 	}
-}
-
-func writeHealth(w http.ResponseWriter, status int, state string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	// The status is already sent; a failed write means the client has gone and nothing is left to do.
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": state})
 }

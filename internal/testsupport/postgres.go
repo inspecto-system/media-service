@@ -5,6 +5,7 @@ package testsupport
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -45,53 +46,71 @@ type Postgres struct {
 // StartPostgres starts PostgreSQL in a container that is removed when the test ends.
 func StartPostgres(t *testing.T) Postgres {
 	t.Helper()
-	ctx := context.Background()
+	db, stop, err := RunPostgres(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	return db
+}
+
+// RunPostgres starts PostgreSQL for a whole test package (from TestMain); call stop at the end.
+func RunPostgres(ctx context.Context) (Postgres, func(), error) {
 	container, err := postgres.Run(ctx, image,
 		postgres.WithDatabase(database),
 		postgres.WithUsername(superuser),
 		postgres.WithPassword(rand.Text()),
 		postgres.BasicWaitStrategies())
-	testcontainers.CleanupContainer(t, container)
+	stop := func() { _ = testcontainers.TerminateContainer(container) }
 	if err != nil {
-		t.Fatalf("start PostgreSQL: %v", err)
+		stop()
+		return Postgres{}, nil, fmt.Errorf("start PostgreSQL: %w", err)
 	}
+	db, err := prepare(ctx, container)
+	if err != nil {
+		stop()
+		return Postgres{}, nil, err
+	}
+	return db, stop, nil
+}
+
+func prepare(ctx context.Context, container *postgres.PostgresContainer) (Postgres, error) {
 	superuserURL, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
-		t.Fatalf("connection string: %v", err)
+		return Postgres{}, fmt.Errorf("connection string: %w", err)
 	}
 	// Passwords are generated per run: the container is disposable and no secret is kept in code.
 	migratorPass, appPass := rand.Text(), rand.Text()
-	createRoles(t, superuserURL, roles(migratorPass, appPass))
+	if err := createRoles(ctx, superuserURL, roles(migratorPass, appPass)); err != nil {
+		return Postgres{}, err
+	}
 	host, err := container.Host(ctx)
 	if err != nil {
-		t.Fatalf("host: %v", err)
+		return Postgres{}, fmt.Errorf("host: %w", err)
 	}
 	port, err := container.MappedPort(ctx, "5432/tcp")
 	if err != nil {
-		t.Fatalf("port: %v", err)
+		return Postgres{}, fmt.Errorf("port: %w", err)
 	}
-	return Postgres{
-		Config: config.Database{
-			URL:      "postgres://" + host + ":" + port.Port() + "/" + database + "?sslmode=disable",
-			App:      config.Credentials{User: "media_app", Password: appPass},
-			Migrator: config.Credentials{User: "media_migrator", Password: migratorPass},
-		},
-	}
+	return Postgres{Config: config.Database{
+		URL:      "postgres://" + host + ":" + port.Port() + "/" + database + "?sslmode=disable",
+		App:      config.Credentials{User: "media_app", Password: appPass},
+		Migrator: config.Credentials{User: "media_migrator", Password: migratorPass},
+	}}, nil
 }
 
-func createRoles(t *testing.T, superuserURL string, statements []string) {
-	t.Helper()
-	ctx := context.Background()
+func createRoles(ctx context.Context, superuserURL string, statements []string) error {
 	conn, err := pgx.Connect(ctx, superuserURL)
 	if err != nil {
-		t.Fatalf("connect as superuser: %v", err)
+		return fmt.Errorf("connect as superuser: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
 	for _, statement := range statements {
 		if _, err := conn.Exec(ctx, statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
+			return fmt.Errorf("%s: %w", statement, err)
 		}
 	}
+	return nil
 }
 
 // URL returns the database URL for a role, failing the test on error.

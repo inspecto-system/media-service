@@ -42,8 +42,8 @@ func TestMigrateIsRepeatableAndAppRoleHasNoDDL(t *testing.T) {
 	if err := pool.QueryRow(ctx, "select version from schema_migrations").Scan(&version); err != nil {
 		t.Fatalf("read migration version: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("version = %d, want 1", version)
+	if version != 2 {
+		t.Errorf("version = %d, want 2", version)
 	}
 	_, err = pool.Exec(ctx, "create table intruder (id int)")
 	if err == nil || !strings.Contains(err.Error(), "permission denied") {

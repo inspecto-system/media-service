@@ -86,3 +86,12 @@ func withRecovery(logger *slog.Logger) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// withSecurityHeaders stops browsers from guessing content types: an uploaded file is always served
+// as the type the service set (SECURITY.md §4).
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}

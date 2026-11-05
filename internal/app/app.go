@@ -10,8 +10,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/inspecto-system/media-service/internal/auth"
 	"github.com/inspecto-system/media-service/internal/config"
+	"github.com/inspecto-system/media-service/internal/core"
 	"github.com/inspecto-system/media-service/internal/httpapi"
+	"github.com/inspecto-system/media-service/internal/imaging"
+	"github.com/inspecto-system/media-service/internal/jobs"
+	"github.com/inspecto-system/media-service/internal/objectstore"
+	"github.com/inspecto-system/media-service/internal/service"
 	"github.com/inspecto-system/media-service/internal/storage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -24,6 +30,8 @@ const (
 	idleTimeout       = 120 * time.Second
 	maxHeaderBytes    = 64 << 10
 	shutdownTimeout   = 20 * time.Second
+	// cleanupInterval is how often unattached photos older than the TTL are looked for.
+	cleanupInterval = time.Hour
 )
 
 // Run migrates the database, then serves HTTP on the listener until ctx is cancelled and the
@@ -36,9 +44,33 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, listener n
 		return err
 	}
 	defer pool.Close()
+	verifier, err := auth.NewVerifier(ctx, cfg.Auth)
+	if err != nil {
+		_ = listener.Close()
+		return err
+	}
+
+	repo := storage.NewPhotos(pool)
+	files := objectstore.New(cfg.Storage)
+	photos := service.NewPhotos(repo, files, core.New(cfg.Core), service.Settings{
+		Limits:  imaging.Limits{MaxPixels: cfg.Photos.MaxPixels},
+		Workers: cfg.Photos.Workers,
+		Logger:  logger,
+	})
+	go jobs.NewCleaner(repo, files, cfg.Photos.UnattachedTTL, cleanupInterval, logger).Run(ctx)
 
 	server := &http.Server{
-		Handler:           httpapi.NewRouter(logger, pool),
+		Handler: httpapi.NewRouter(httpapi.Dependencies{
+			Logger:   logger,
+			Ready:    []httpapi.Pinger{pool, files},
+			Verifier: verifier,
+			Photos:   photos,
+			Limits: httpapi.Limits{
+				MaxFileSizeBytes:        cfg.Photos.MaxFileSizeBytes,
+				MaxPixels:               cfg.Photos.MaxPixels,
+				MaxPhotosPerObservation: cfg.Photos.MaxPhotosPerObservation,
+			},
+		}),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
