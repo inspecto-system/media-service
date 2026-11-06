@@ -1,0 +1,5 @@
+# Build context of the Docker image: only Go sources.
+.git
+.github
+coverage.out
+**/testdata
