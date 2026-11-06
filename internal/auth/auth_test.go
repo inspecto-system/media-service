@@ -20,7 +20,7 @@ func verifier(t *testing.T, issuer *testsupport.TokenIssuer) *Verifier {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	v, err := NewVerifier(ctx, config.Auth{
-		JWKSURL: issuer.JWKSURL, Issuer: "inspecto-core", Audience: "inspecto-api",
+		JWKSURL: issuer.JWKSURL, Issuer: "inspecto-core", Audience: "inspecto-api", InternalAudience: "inspecto-internal",
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
@@ -110,5 +110,48 @@ func TestOnlyInspectorsAndAdminsManageProperties(t *testing.T) {
 func TestNewVerifierRejectsInvalidURL(t *testing.T) {
 	if _, err := NewVerifier(context.Background(), config.Auth{JWKSURL: "::"}); err == nil {
 		t.Error("want an error")
+	}
+}
+
+func TestVerifyServiceReadsSubjectAndScopes(t *testing.T) {
+	issuer := testsupport.NewTokenIssuer(t)
+
+	service, err := verifier(t, issuer).VerifyService(issuer.ServiceToken(t, "core-service", ScopePhotosManage+" other"))
+	if err != nil {
+		t.Fatalf("VerifyService: %v", err)
+	}
+	if service.Name != "core-service" || !service.Has(ScopePhotosManage) || service.Has(ScopePhotosRead) {
+		t.Errorf("service = %+v", service)
+	}
+}
+
+func TestUserAndServiceTokensAreNotInterchangeable(t *testing.T) {
+	issuer := testsupport.NewTokenIssuer(t)
+	v := verifier(t, issuer)
+
+	if _, err := v.VerifyService(issuer.Token(t, uuid.New(), RoleAdmin)); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("user token accepted as service token: %v", err)
+	}
+	if _, err := v.Verify(issuer.ServiceToken(t, "core-service", ScopePhotosManage)); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("service token accepted as user token: %v", err)
+	}
+}
+
+func TestVerifyServiceRejectsBrokenTokens(t *testing.T) {
+	issuer := testsupport.NewTokenIssuer(t)
+	v := verifier(t, issuer)
+	internal := func(change func(jwt.MapClaims)) string {
+		return issuer.Sign(t, claimsWith(func(c jwt.MapClaims) {
+			c["aud"] = []string{"inspecto-internal"}
+			change(c)
+		}))
+	}
+
+	if _, err := v.VerifyService(internal(func(c jwt.MapClaims) { delete(c, "sub") })); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("no subject: %v", err)
+	}
+	expired := internal(func(c jwt.MapClaims) { c["exp"] = time.Now().Add(-time.Hour).Unix() })
+	if _, err := v.VerifyService(expired); !errors.Is(err, ErrExpiredToken) {
+		t.Errorf("expired: %v", err)
 	}
 }

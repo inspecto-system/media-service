@@ -69,3 +69,16 @@ func (i *TokenIssuer) Sign(t *testing.T, claims jwt.MapClaims) string {
 	}
 	return signed
 }
+
+// ServiceToken returns a valid service token of the named service with the given scopes.
+func (i *TokenIssuer) ServiceToken(t *testing.T, service, scope string) string {
+	t.Helper()
+	return i.Sign(t, jwt.MapClaims{
+		"iss":   "inspecto-core",
+		"aud":   []string{"inspecto-internal"},
+		"sub":   service,
+		"scope": scope,
+		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(15 * time.Minute).Unix(),
+	})
+}

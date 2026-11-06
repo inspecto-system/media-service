@@ -35,6 +35,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 		},
 		Auth: Auth{
 			JWKSURL: "http://127.0.0.1:8081/api/v1/.well-known/jwks.json", Issuer: "inspecto-core", Audience: "inspecto-api",
+			InternalAudience: "inspecto-internal",
 		},
 		Core: Core{URL: "http://127.0.0.1:8081", ClientID: "media-service", ClientSecret: "client-secret"},
 		Storage: Storage{

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/inspecto-system/media-service/internal/auth"
 )
 
 // readinessTimeout bounds the dependency checks of /health/ready.
@@ -25,10 +27,13 @@ type Dependencies struct {
 	Verifier TokenVerifier
 	Photos   PhotoService
 	Limits   Limits
+	// Services verifies service tokens of /internal/** (not routed by nginx, ADR-013).
+	Services ServiceVerifier
+	Internal InternalService
 }
 
 // NewRouter builds the HTTP handler of the service. External endpoints are served under /api/v1,
-// as routed by nginx (ADR-013).
+// as routed by nginx (ADR-013); /internal/v1 accepts only service tokens.
 func NewRouter(deps Dependencies) http.Handler {
 	r := chi.NewRouter()
 	r.Use(withRequestID, withSecurityHeaders, withAccessLog(deps.Logger), withRecovery(deps.Logger))
@@ -50,6 +55,17 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Post("/", photos.upload)
 		r.Get("/{photoId}/content", photos.content)
 		r.Delete("/{photoId}", photos.delete)
+	})
+
+	internal := internalHandlers{photos: deps.Internal, logger: deps.Logger}
+	r.Route("/internal/v1/photos", func(r chi.Router) {
+		r.With(serviceAuthenticated(deps.Services, auth.ScopePhotosManage)).Group(func(r chi.Router) {
+			r.Get("/{photoId}", internal.metadata)
+			r.Post("/{photoId}/attach", internal.attach)
+			r.Delete("/{photoId}", internal.delete)
+			r.Delete("/", internal.deleteInBulk)
+		})
+		r.With(serviceAuthenticated(deps.Services, auth.ScopePhotosRead)).Get("/{photoId}/content", internal.content)
 	})
 	return r
 }

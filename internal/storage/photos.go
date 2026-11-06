@@ -101,18 +101,10 @@ func (r *Photos) DeleteUploaded(ctx context.Context, id, ownerID uuid.UUID) (Pho
 // TakeExpired deletes up to limit unattached photos created before the given time and returns
 // them so their files can be removed. Rows locked by a concurrent attach are skipped.
 func (r *Photos) TakeExpired(ctx context.Context, before time.Time, limit int) ([]Photo, error) {
-	rows, err := r.pool.Query(ctx, `DELETE FROM photos WHERE id IN (
+	return r.many(ctx, `DELETE FROM photos WHERE id IN (
 			SELECT id FROM photos WHERE status = 'UPLOADED' AND created_at < $1
 			ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED)
 		RETURNING `+photoColumns, before, limit)
-	if err != nil {
-		return nil, fmt.Errorf("delete expired photos: %w", err)
-	}
-	photos, err := pgx.CollectRows(rows, scanPhoto)
-	if err != nil {
-		return nil, fmt.Errorf("delete expired photos: %w", err)
-	}
-	return photos, nil
 }
 
 func (r *Photos) one(ctx context.Context, query string, args ...any) (Photo, error) {
@@ -135,4 +127,40 @@ func scanPhoto(row pgx.CollectableRow) (Photo, error) {
 	err := row.Scan(&p.ID, &p.OwnerID, &p.PropertyID, &p.Status, &p.OriginalKey, &p.PreviewKey, &p.ThumbKey,
 		&p.ContentType, &p.SizeBytes, &p.Width, &p.Height, &p.SHA256, &p.IdempotencyKey, &p.CreatedAt, &p.AttachedAt)
 	return p, err
+}
+
+// Attach marks a photo as attached; repeating it keeps the first attachment time.
+func (r *Photos) Attach(ctx context.Context, id uuid.UUID, at time.Time) (Photo, error) {
+	return r.one(ctx, `UPDATE photos SET status = 'ATTACHED', attached_at = COALESCE(attached_at, $2)
+		WHERE id = $1 RETURNING `+photoColumns, id, at)
+}
+
+// ListByProperty returns all photos of a property.
+func (r *Photos) ListByProperty(ctx context.Context, propertyID uuid.UUID) ([]Photo, error) {
+	return r.many(ctx, `SELECT `+photoColumns+` FROM photos WHERE property_id = $1`, propertyID)
+}
+
+// ListByOwner returns all photos uploaded by a user.
+func (r *Photos) ListByOwner(ctx context.Context, ownerID uuid.UUID) ([]Photo, error) {
+	return r.many(ctx, `SELECT `+photoColumns+` FROM photos WHERE owner_id = $1`, ownerID)
+}
+
+// DeleteByIDs deletes photos regardless of their status; missing ids are ignored.
+func (r *Photos) DeleteByIDs(ctx context.Context, ids []uuid.UUID) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM photos WHERE id = ANY($1)`, ids); err != nil {
+		return fmt.Errorf("delete photos: %w", err)
+	}
+	return nil
+}
+
+func (r *Photos) many(ctx context.Context, query string, args ...any) ([]Photo, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query photos: %w", err)
+	}
+	photos, err := pgx.CollectRows(rows, scanPhoto)
+	if err != nil {
+		return nil, fmt.Errorf("query photos: %w", err)
+	}
+	return photos, nil
 }
