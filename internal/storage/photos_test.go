@@ -156,4 +156,69 @@ func TestRepositoryReportsDatabaseErrors(t *testing.T) {
 	if _, err := repo.TakeExpired(ctx, time.Now(), 1); err == nil {
 		t.Error("TakeExpired: want an error")
 	}
+	if _, err := repo.ListByOwner(ctx, uuid.New()); err == nil {
+		t.Error("ListByOwner: want an error")
+	}
+	if err := repo.DeleteByIDs(ctx, []uuid.UUID{uuid.New()}); err == nil {
+		t.Error("DeleteByIDs: want an error")
+	}
+}
+
+func insertAll(t *testing.T, repo *Photos, photos ...Photo) {
+	t.Helper()
+	for _, p := range photos {
+		if err := repo.Insert(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAttachKeepsFirstTime(t *testing.T) {
+	repo := NewPhotos(migratedPool(t))
+	ctx := context.Background()
+	a := newPhoto(uuid.New(), time.Now(), nil)
+	insertAll(t, repo, a)
+
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	attached, err := repo.Attach(ctx, a.ID, at)
+	if err != nil || attached.Status != StatusAttached || !attached.AttachedAt.Equal(at) {
+		t.Fatalf("Attach = %+v, %v", attached, err)
+	}
+	again, err := repo.Attach(ctx, a.ID, at.Add(time.Hour))
+	if err != nil || !again.AttachedAt.Equal(at) {
+		t.Errorf("repeated Attach changed the time: %+v, %v", again.AttachedAt, err)
+	}
+	if _, err := repo.Attach(ctx, uuid.New(), at); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Attach of a missing photo: %v", err)
+	}
+}
+
+func TestListAndDeleteByIDs(t *testing.T) {
+	repo := NewPhotos(migratedPool(t))
+	ctx := context.Background()
+	owner := uuid.New()
+	a := newPhoto(owner, time.Now(), nil)
+	b := newPhoto(owner, time.Now(), nil)
+	b.PropertyID = a.PropertyID
+	other := newPhoto(uuid.New(), time.Now(), nil)
+	insertAll(t, repo, a, b, other)
+
+	byProperty, err := repo.ListByProperty(ctx, a.PropertyID)
+	if err != nil || len(byProperty) != 2 {
+		t.Errorf("ListByProperty = %d, %v", len(byProperty), err)
+	}
+	byOwner, err := repo.ListByOwner(ctx, owner)
+	if err != nil || len(byOwner) != 2 {
+		t.Errorf("ListByOwner = %d, %v", len(byOwner), err)
+	}
+
+	if err := repo.DeleteByIDs(ctx, []uuid.UUID{a.ID, b.ID, uuid.New()}); err != nil {
+		t.Fatalf("DeleteByIDs: %v", err)
+	}
+	if rest, _ := repo.ListByOwner(ctx, owner); len(rest) != 0 {
+		t.Errorf("photos left: %d", len(rest))
+	}
+	if _, err := repo.Get(ctx, other.ID); err != nil {
+		t.Errorf("photo of another owner removed: %v", err)
+	}
 }

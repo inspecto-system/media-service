@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -98,10 +97,7 @@ func (h photoHandlers) upload(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, photoResponse{
-		ID: photo.ID, PropertyID: photo.PropertyID, ContentType: photo.ContentType,
-		Width: photo.Width, Height: photo.Height, SizeBytes: photo.SizeBytes, CreatedAt: photo.CreatedAt,
-	})
+	writeJSON(w, http.StatusCreated, toPhotoResponse(photo))
 }
 
 func (h photoHandlers) content(w http.ResponseWriter, r *http.Request) {
@@ -109,13 +105,8 @@ func (h photoHandlers) content(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	variant := r.URL.Query().Get("variant")
-	switch variant {
-	case "":
-		variant = service.VariantPreview
-	case service.VariantOriginal, service.VariantPreview, service.VariantThumb:
-	default:
-		writeInvalid(w, r, FieldViolation{Field: "variant", Code: "INVALID_FORMAT"})
+	variant, ok := variantParam(w, r)
+	if !ok {
 		return
 	}
 	body, size, err := h.photos.Content(r.Context(), userFrom(r.Context()).ID, photoID, variant)
@@ -123,13 +114,7 @@ func (h photoHandlers) content(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	defer func() { _ = body.Close() }()
-	w.Header().Set("Content-Type", string(imaging.JPEG))
-	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-	w.Header().Set("Cache-Control", "private")
-	w.WriteHeader(http.StatusOK)
-	// The status is already sent; a failed copy means the client has gone.
-	_, _ = io.Copy(w, body)
+	writeImage(w, body, size)
 }
 
 func (h photoHandlers) delete(w http.ResponseWriter, r *http.Request) {

@@ -50,27 +50,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, listener n
 		return err
 	}
 
-	repo := storage.NewPhotos(pool)
-	files := objectstore.New(cfg.Storage)
-	photos := service.NewPhotos(repo, files, core.New(cfg.Core), service.Settings{
-		Limits:  imaging.Limits{MaxPixels: cfg.Photos.MaxPixels},
-		Workers: cfg.Photos.Workers,
-		Logger:  logger,
-	})
-	go jobs.NewCleaner(repo, files, cfg.Photos.UnattachedTTL, cleanupInterval, logger).Run(ctx)
-
 	server := &http.Server{
-		Handler: httpapi.NewRouter(httpapi.Dependencies{
-			Logger:   logger,
-			Ready:    []httpapi.Pinger{pool, files},
-			Verifier: verifier,
-			Photos:   photos,
-			Limits: httpapi.Limits{
-				MaxFileSizeBytes:        cfg.Photos.MaxFileSizeBytes,
-				MaxPixels:               cfg.Photos.MaxPixels,
-				MaxPhotosPerObservation: cfg.Photos.MaxPhotosPerObservation,
-			},
-		}),
+		Handler:           wire(ctx, cfg, logger, pool, verifier),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -97,6 +78,31 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, listener n
 	}
 	logger.InfoContext(ctx, "media-service stopped")
 	return nil
+}
+
+// wire builds the services and the HTTP handler and starts the clean-up job, which stops with ctx.
+func wire(ctx context.Context, cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool, verifier *auth.Verifier) http.Handler {
+	repo := storage.NewPhotos(pool)
+	files := objectstore.New(cfg.Storage)
+	photos := service.NewPhotos(repo, files, core.New(cfg.Core), service.Settings{
+		Limits:  imaging.Limits{MaxPixels: cfg.Photos.MaxPixels},
+		Workers: cfg.Photos.Workers,
+		Logger:  logger,
+	})
+	go jobs.NewCleaner(repo, files, cfg.Photos.UnattachedTTL, cleanupInterval, logger).Run(ctx)
+	return httpapi.NewRouter(httpapi.Dependencies{
+		Logger:   logger,
+		Ready:    []httpapi.Pinger{pool, files},
+		Verifier: verifier,
+		Photos:   photos,
+		Services: verifier,
+		Internal: service.NewInternal(repo, files),
+		Limits: httpapi.Limits{
+			MaxFileSizeBytes:        cfg.Photos.MaxFileSizeBytes,
+			MaxPixels:               cfg.Photos.MaxPixels,
+			MaxPhotosPerObservation: cfg.Photos.MaxPhotosPerObservation,
+		},
+	})
 }
 
 // prepareDatabase applies migrations as the schema owner and connects as the DML-only role.

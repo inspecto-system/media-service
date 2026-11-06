@@ -13,12 +13,12 @@
 | `internal/auth` | Проверка JWT пользователей по JWKS core-service (только RS256, `iss`, `aud`, `exp`) |
 | `internal/config` | Настройки из переменных окружения |
 | `internal/core` | Внутренний API core: сервисный токен, проверка доступа к объекту (кеш положительных ответов 60 с) |
-| `internal/httpapi` | Маршрутизация, `/api/v1/photos`, `X-Request-Id`, журнал запросов, ошибки RFC 9457, `/health/*` |
+| `internal/httpapi` | Маршрутизация, `/api/v1/photos`, `/internal/v1/photos` (сервисные токены со scope `photos.manage` / `photos.read`), `X-Request-Id`, журнал запросов, ошибки RFC 9457, `/health/*` |
 | `internal/imaging` | Проверка по сигнатуре, лимит пикселей до декодирования, поворот по EXIF, три варианта JPEG (ADR-025) |
 | `internal/jobs` | Удаление фото, не прикреплённых за `MEDIA_UNATTACHED_TTL` (ADR-018) |
 | `internal/logging` | JSON-логи с полями ECS, как у core-service |
 | `internal/objectstore` | Файлы в S3-совместимом хранилище (SeaweedFS, ADR-024) |
-| `internal/service` | Правила загрузки, выдачи и удаления фото |
+| `internal/service` | Правила загрузки, выдачи и удаления фото; внутренние операции: метаданные, attach, удаление (сначала файлы, потом строки — повтор безопасен) |
 | `internal/storage` | PostgreSQL (pgx), таблица `photos`, миграции (встроены в бинарник) |
 | `internal/testsupport` | PostgreSQL и SeaweedFS в Testcontainers, выпуск тестовых JWT |
 
@@ -32,6 +32,7 @@
 | `MEDIA_DB_MIGRATOR_USER` / `MEDIA_DB_MIGRATOR_PASSWORD` | `media_migrator` / — | Владелец схемы, только для миграций |
 | `MEDIA_JWKS_URL` | `http://127.0.0.1:8081/api/v1/.well-known/jwks.json` | Открытые ключи core |
 | `MEDIA_JWT_ISSUER` / `MEDIA_JWT_AUDIENCE` | `inspecto-core` / `inspecto-api` | Ожидаемые `iss` и `aud` токена |
+| `MEDIA_JWT_INTERNAL_AUDIENCE` | `inspecto-internal` | `aud` сервисных токенов, принимаются только на `/internal/**` |
 | `MEDIA_CORE_URL` | `http://127.0.0.1:8081` | core-service для проверки доступа |
 | `MEDIA_CORE_CLIENT_SECRET` | — | Секрет клиента `media-service` (тот же, что `CORE_MEDIA_CLIENT_SECRET` в core) |
 | `MEDIA_S3_ENDPOINT` / `MEDIA_S3_REGION` / `MEDIA_S3_BUCKET` | `http://127.0.0.1:8333` / `us-east-1` / `photos` | Хранилище файлов |

@@ -1,11 +1,14 @@
-// Package auth verifies user access tokens issued by core-service (ADR-007): RS256 signature with a
-// key from the JWKS of core, issuer, audience and expiry.
+// Package auth verifies tokens issued by core-service (ADR-007): RS256 signature with a key from
+// the JWKS of core, issuer, audience and expiry. User access tokens and service tokens differ only
+// in the audience, so a token of one kind is never accepted as the other.
 package auth
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -19,6 +22,12 @@ import (
 const (
 	RoleAdmin     = "ADMIN"
 	RoleInspector = "INSPECTOR"
+)
+
+// Scopes of service tokens (docs/API_DOCUMENTATION.md, internal endpoints).
+const (
+	ScopePhotosManage = "photos.manage"
+	ScopePhotosRead   = "photos.read"
 )
 
 // clockSkew tolerates small clock differences between core-service and media-service.
@@ -39,15 +48,24 @@ type User struct {
 	Role string
 }
 
+// Service is the service that called an internal endpoint.
+type Service struct {
+	// Name is the client id, for example core-service.
+	Name   string
+	Scopes []string
+}
+
 // Verifier checks access tokens.
 type Verifier struct {
-	keys   jwt.Keyfunc
-	parser *jwt.Parser
+	keys     jwt.Keyfunc
+	users    *jwt.Parser
+	services *jwt.Parser
 }
 
 type claims struct {
 	jwt.RegisteredClaims
-	Role string `json:"role"`
+	Role  string `json:"role"`
+	Scope string `json:"scope"`
 }
 
 // NewVerifier loads the signing keys from the JWKS URL of core-service and keeps them up to date
@@ -58,31 +76,29 @@ func NewVerifier(ctx context.Context, cfg config.Auth) (*Verifier, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load JWKS: %w", err)
 	}
-	return newVerifier(keys.Keyfunc, cfg), nil
-}
-
-func newVerifier(keys jwt.Keyfunc, cfg config.Auth) *Verifier {
 	return &Verifier{
-		keys: keys,
-		parser: jwt.NewParser(
-			// Only RS256: protects against alg=none and algorithm substitution (SECURITY.md §2).
-			jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
-			jwt.WithIssuer(cfg.Issuer),
-			jwt.WithAudience(cfg.Audience),
-			jwt.WithExpirationRequired(),
-			jwt.WithLeeway(clockSkew),
-		),
-	}
+		keys:     keys.Keyfunc,
+		users:    parser(cfg.Issuer, cfg.Audience),
+		services: parser(cfg.Issuer, cfg.InternalAudience),
+	}, nil
 }
 
-// Verify returns the user of a valid token.
+func parser(issuer, audience string) *jwt.Parser {
+	return jwt.NewParser(
+		// Only RS256: protects against alg=none and algorithm substitution (SECURITY.md §2).
+		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithIssuer(issuer),
+		jwt.WithAudience(audience),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(clockSkew),
+	)
+}
+
+// Verify returns the user of a valid user access token.
 func (v *Verifier) Verify(token string) (User, error) {
-	var c claims
-	if _, err := v.parser.ParseWithClaims(token, &c, v.keys); err != nil {
-		if errors.Is(err, jwt.ErrTokenExpired) {
-			return User{}, ErrExpiredToken
-		}
-		return User{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+	c, err := v.parse(v.users, token)
+	if err != nil {
+		return User{}, err
 	}
 	id, err := uuid.Parse(c.Subject)
 	if err != nil {
@@ -91,8 +107,36 @@ func (v *Verifier) Verify(token string) (User, error) {
 	return User{ID: id, Role: c.Role}, nil
 }
 
+// VerifyService returns the caller of a valid service token.
+func (v *Verifier) VerifyService(token string) (Service, error) {
+	c, err := v.parse(v.services, token)
+	if err != nil {
+		return Service{}, err
+	}
+	if c.Subject == "" {
+		return Service{}, fmt.Errorf("%w: no subject", ErrInvalidToken)
+	}
+	return Service{Name: c.Subject, Scopes: strings.Fields(c.Scope)}, nil
+}
+
+func (v *Verifier) parse(p *jwt.Parser, token string) (claims, error) {
+	var c claims
+	if _, err := p.ParseWithClaims(token, &c, v.keys); err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return claims{}, ErrExpiredToken
+		}
+		return claims{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
+	}
+	return c, nil
+}
+
 // CanManageProperties tells whether the role may work with photos of properties; clients with
 // read-only access arrive with the CLIENT role in the extension stage (ADR-009).
 func (u User) CanManageProperties() bool {
 	return u.Role == RoleInspector || u.Role == RoleAdmin
+}
+
+// Has tells whether the token grants the scope.
+func (s Service) Has(scope string) bool {
+	return slices.Contains(s.Scopes, scope)
 }

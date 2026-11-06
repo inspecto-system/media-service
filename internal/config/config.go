@@ -43,9 +43,12 @@ func (c Credentials) String() string {
 
 // Auth describes how user access tokens issued by core-service are verified (ADR-007).
 type Auth struct {
-	JWKSURL  string
-	Issuer   string
+	JWKSURL string
+	Issuer  string
+	// Audience of user access tokens.
 	Audience string
+	// InternalAudience of service tokens, accepted only on /internal/**.
+	InternalAudience string
 }
 
 // Core is the internal API of core-service used for access checks.
@@ -87,9 +90,10 @@ func Load(getenv func(string) string) (Config, error) {
 			Migrator: Credentials{User: r.text("MEDIA_DB_MIGRATOR_USER", "media_migrator"), Password: r.secret("MEDIA_DB_MIGRATOR_PASSWORD")},
 		},
 		Auth: Auth{
-			JWKSURL:  r.httpURL("MEDIA_JWKS_URL", "http://127.0.0.1:8081/api/v1/.well-known/jwks.json"),
-			Issuer:   r.text("MEDIA_JWT_ISSUER", "inspecto-core"),
-			Audience: r.text("MEDIA_JWT_AUDIENCE", "inspecto-api"),
+			JWKSURL:          r.httpURL("MEDIA_JWKS_URL", "http://127.0.0.1:8081/api/v1/.well-known/jwks.json"),
+			Issuer:           r.text("MEDIA_JWT_ISSUER", "inspecto-core"),
+			Audience:         r.text("MEDIA_JWT_AUDIENCE", "inspecto-api"),
+			InternalAudience: r.text("MEDIA_JWT_INTERNAL_AUDIENCE", "inspecto-internal"),
 		},
 		Core: Core{
 			URL:          r.httpURL("MEDIA_CORE_URL", "http://127.0.0.1:8081"),
