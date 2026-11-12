@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.9.1
-	github.com/aws/aws-sdk-go-v2 v1.47.6
+	github.com/aws/aws-sdk-go-v2 v1.47.8
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.14
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.7
 	github.com/go-chi/chi/v5 v5.5.0
